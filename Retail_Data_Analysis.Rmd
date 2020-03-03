@@ -1,0 +1,414 @@
+---
+title: "Amruta:Sample Data Analysis in R"
+author: "Amruta"
+date: "02/25/2020"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Part A : Data Inspection {.tabset}
+Lets start with some basic analysis - Summary statiscs and missing values for each of the columns or any discrepancies. I will first add all the libraries I used. 
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(kableExtra)
+library(patchwork)
+library(treemap)
+library(plotly)
+library(htmlwidgets)
+library(ggmap)
+
+retail_data <- read_excel("retail_data.xlsx", sheet =1)
+retail_data2<- read_excel("retail_data.xlsx", sheet =2)
+
+## Mydata 
+mydata1<- retail_data
+mydata2 <- retail_data2
+
+## Combine both the sheets using rbind
+
+mydata<- rbind(mydata1,mydata2)
+
+## Data view
+head(mydata)
+
+```
+
+As we can see, the available columns in the retail data are Invoice, StockCode, Description, Quantity, InvoiceDate ,Price ,Customer ID. 
+Lets start with some basic analysis
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+### Summary stats for the quantity and price
+
+summary(mydata$Quantity)
+summary(mydata$Price)
+summary(mydata$`Customer ID`)
+Check_nas<- data.frame(sapply(mydata, function(x) sum(is.na(x))))
+names(Check_nas)<- 'Missing Values'
+table(is.na(mydata$`Customer ID`))
+mydata$`Customer ID`[is.na(mydata$`Customer ID`)] <- 0
+mydata$Description[is.na(mydata$Description)] <- 'Unknown'
+```
+The summary statistics tells us that their seems to be some cancellations in the data since there are negative values in the Quantity and Price columns. Also, there are lot of missing values in the Customer Id column. We can simply replace these by 0 for our convenience and replace the blanks in the Description by "Unknown".
+
+Lets try to answer some more basic questions about the data. 
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+n_distinct(mydata$`Customer ID`)
+n_distinct(mydata$Invoice)
+n_distinct(mydata$Country)
+mydata$sale<- mydata$Price *mydata$Quantity
+countries<- data.frame(aggregate(`Customer ID` ~ Country, mydata,function(x) n_distinct(x)))
+names(countries)<- c('Country','Number of Customers')
+# Plot
+library(treemap)
+treemap(countries,
+        index="Country",
+        vSize="Number of Customers",
+        type="index",
+        title="",
+        palette="Dark2",
+        border.col=c("black"),             
+        border.lwds=1,                         
+        fontsize.labels=0.5,
+        fontcolor.labels="white",
+        fontface.labels=1,            
+        bg.labels=c("transparent"),              
+        align.labels=c("left", "top"),                                  
+        overlap.labels=0.3,
+        inflate.labels=T) 
+```
+There are 5,943 unique customers in the dataset across 43 different countries. The tree maps explains which countries the customers belong to and the size of the blocks depicts the revenue. Uk pre-dominantly has all the users.It will be interesting to see the average spending by Country. The number of users are pretty low like 1 or 2 customers for few of the countries so it won't be apple to apple. But we can pick the top 10 countries assuming our sample data is not biased. Lets aggregate further data for this analysis.
+
+## Part B : Aggregation on Invoice level{.tabset}
+
+We can aggregate data on transaction/invoice level. We can start with calculating the the total sale (quantity*price). Then, flag all the transactions that are negative or 0 as Cancelled Transaction versus the rest as Valid Transactions. We can later do an entirely separate Cancelled Transactions analysis. For now,lets focus on Valid Transactions.
+
+ ```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+avg_spent  <- mydata %>% 
+  group_by(Invoice,InvoiceDate,`Customer ID`,Country) %>%
+  summarise(Purchase = sum(sale),Total_Items = sum(Quantity))
+
+avg_spent$Flag[avg_spent$Purchase <= 0]<-'Cancelled Transaction'
+avg_spent$Flag[avg_spent$Purchase > 0]<-'Valid Transaction'
+new_data<- avg_spent[avg_spent$Flag=='Valid Transaction',]
+
+
+countries<- countries[order(-countries$`Number of Customers`),]
+Top10_countries<- head(countries,10)
+
+Avg_Spent_country  <- new_data %>% 
+  group_by(Country) %>%
+  summarise(Avg_Spent = mean(Purchase))
+Avg_Spent_country<- Avg_Spent_country[order(Avg_Spent_country$Avg_Spent),]
+Avg_Spent_country<- Avg_Spent_country[Avg_Spent_country$Country %in% Top10_countries$Country,]
+Avg_Spent_country$Country <- factor(Avg_Spent_country$Country , levels = Avg_Spent_country$Country )
+
+Avg_Spent_country %>%
+  mutate(name = fct_reorder(Country,(Avg_Spent))) %>%
+  arrange(desc(Avg_Spent)) %>%
+  ggplot( aes(x=Country, y=Avg_Spent)) +
+  geom_bar(stat="identity", fill="#f68060", alpha=.6, width=.4) +
+  coord_flip() +
+  xlab("") +
+  theme_bw()+
+  ggtitle("Average Spent by Country(Top 10)" )
+```
+The Average spend is highest in Netherlands followed by Switzerland whereas UK lies pretty low on the list. It will be good to have more data to back up this analysis. Interesting part is to understand the major difference and what items are these users buying which others are not ! It could be possible that these items are specific to some climatic conditions and available through limited sellers only.
+
+## Part C : Product Data Analysis {.tabset}
+
+ lets try to understand the items that these customers are buying the most and the items that yield most of the revenue. We can narrow down this list on top 10 items.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+mydata<- mydata[mydata$Quantity>0,]
+## Some clean out on data needed for item level analysis. I found these after plotting so added these.
+
+mydata$Description[mydata$Description == 'PACK OF 72 RETRO SPOT CAKE CASES']<- 'PACK OF 72 RETROSPOT CAKE CASES'
+
+mydata$Description[mydata$Description %in% c('POPCORN HOLDER , SMALL','Unknown')]<- 'SMALL POPCORN HOLDER'
+
+mydata$Description[mydata$Description == 'MINI PAINT SET VINTAGE  BOY+ GIRL']<- 'MINI PAINT SET VINTAGE'
+
+mydata$Description[mydata$Description %in% c('CREAM HANGING HEART T-LIGHT HOLDER','WHITE HANGING HEART T-LIGHT HOLDER')]<- 'HANGING HEART T-LIGHT HOLDER'
+
+mydata$Description[mydata$Description %in% c('JUMBO BAG RED RETROSPOT','JUMBO BAG RED WHITE SPOTTY','RED RETROSPOT JUMBO BAG')]<- 'RED/WHITE RETROSPOT JUMBO BAG'
+
+mydata$Description[mydata$Description %in% c('?','CREAM HANGING HEART T-LIGHT HOLDER')]<- 'HANGING HEART T-LIGHT HOLDER'
+
+## Top items popular by qt
+
+stock_details<- aggregate(Quantity ~ StockCode, mydata, sum)
+stock_details$percent<- stock_details$Quantity/sum(stock_details$Quantity)
+
+stock_details<- stock_details[order(-stock_details$percent),]
+
+stock_details$cumu <- cumsum(stock_details$percent)
+
+## Top 10% selling items by quantity
+
+Top10items<- stock_details[stock_details$cumu < 0.1,]
+
+## Get the details of these top 10% items ..
+
+top10items_details<- mydata[mydata$StockCode %in% Top10items$StockCode,]
+
+## Final table on top 10% items 
+
+items<-top10items_details %>%
+  group_by(StockCode,Description) %>% 
+  summarise(Total_Quantity_Sold = sum(Quantity))
+
+items<- items[order(-items$Total_Quantity_Sold),]
+items<- head(items,10)
+items<- na.omit(items)
+items<- items[order(items$Total_Quantity_Sold),]
+
+## Lollipop diagram to show the top 10% items n their price n quantity sold
+
+items$Description <- factor(items$Description , levels = items$Description )
+items %>%
+  filter(!is.na(Total_Quantity_Sold)) %>%
+  arrange(Total_Quantity_Sold) %>%
+  mutate(Product=fct_reorder(Description,Total_Quantity_Sold)) %>%
+  ggplot(aes(x=Description,y=Total_Quantity_Sold))  +
+  geom_segment( aes(x=Description ,xend=Description, y=0, yend=Total_Quantity_Sold), color="grey") +
+  geom_point(size=3, color="#69b3a2") +
+  coord_flip() +
+  theme(
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position="none"
+  ) +
+  xlab("") +
+  ggtitle("Top 10 Items by Sold by Quantity")
+```
+The top 10 items that are sold have a pretty interesting list of decorative items which tells these are the most popular items sold. Netherlands and Switzerland being touristy countries. It might be possible that the items are sold to the tourist and have higher spending due to that! 
+Lets further see which are the top 10 items that yield the revenue.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+## top 10 items by revenue
+
+stock_details2<- aggregate(sale ~ StockCode, mydata, sum)
+stock_details2$percent<- stock_details2$sale/sum(stock_details2$sale)
+
+stock_details2<- stock_details2[order(-stock_details2$percent),]
+
+stock_details2$cumu <- cumsum(stock_details2$percent)
+
+## Top 10% selling items by quantity
+
+Top10items2<- stock_details2[stock_details2$cumu <= 0.1,]
+## Get the details of these top 10% items ..
+top10items_details2<- mydata[mydata$StockCode %in% Top10items2$StockCode,]
+
+## Final table on top 10% items 
+
+items2<-top10items_details2 %>%
+  group_by(StockCode,Description) %>% 
+  summarise(Total_Revenue = sum(sale))
+items2<- items2[items2$Total_Revenue>0,]
+items2<- items2[order(items2$Total_Revenue),]
+
+## Lollipop diagram to show the top 10% items n their price n quantity sold
+
+items2$Description <- factor(items2$Description , levels = items2$Description )
+items2 %>%
+  filter(!is.na(Total_Revenue)) %>%
+  arrange(Total_Revenue) %>%
+  mutate(Product=fct_reorder(Description,desc(Total_Revenue))) %>%
+  ggplot(aes(x=Description,y=Total_Revenue))  +
+  geom_segment( aes(x=Description ,xend=Description, y=0, yend=Total_Revenue), color="grey") +
+  geom_point(size=3, color="#69b3a2") +
+  coord_flip() +
+  theme(
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position="none"
+  ) +
+  xlab("") +
+  ggtitle("Top 10 Items by Revenue")
+```
+Here it is interesting to see a bit different list of items. Although the Manual, Dotcom Postage and Postage probably represent something else. These are probably some other cost associated.Lets refine this list and plot again. 
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+stock_details2<-stock_details2[stock_details2$StockCode %!in% c("M","DOT","POST"),]
+stock_details2$percent<- stock_details2$sale/sum(stock_details2$sale)
+stock_details2<- stock_details2[order(-stock_details2$percent),]
+stock_details2$cumu <- cumsum(stock_details2$percent)
+## Top 10% selling items by quantity
+Top10items2<- stock_details2[stock_details2$cumu <= 0.1,]
+## Get the details of these top 10% items ..
+top10items_details2<- mydata[mydata$StockCode %in% Top10items2$StockCode,]
+## Final table on top 10% items 
+items2<-top10items_details2 %>%
+  group_by(StockCode,Description) %>% 
+  summarise(Total_Revenue = sum(sale))
+items2<- items2[items2$Total_Revenue>0,]
+items2<- items2[order(-items2$Total_Revenue),]
+items2<- head(items2,10)
+items2<- items2[order(items2$Total_Revenue),]
+## Lollipop diagram to show the top 10% items n their price n quantity sold
+
+items2$Description <- factor(items2$Description , levels = items2$Description )
+items2 %>%
+  filter(!is.na(Total_Revenue)) %>%
+  arrange(Total_Revenue) %>%
+  mutate(Product=fct_reorder(Description,desc(Total_Revenue))) %>%
+  ggplot(aes(x=Description,y=Total_Revenue))  +
+  geom_segment( aes(x=Description ,xend=Description, y=0, yend=Total_Revenue), color="grey") +
+  geom_point(size=3, color="#69b3a2") +
+  coord_flip() +
+  theme(
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position="none"
+  ) +
+  xlab("") +
+  ggtitle("Top 10 Items by Revenue")
+```
+Seems like there are few items like the T-light Holder that hold their place in quantity as well as revenue. 
+
+## Part D : Customer Data Analysis{.tabset}
+We can start exploring the spread of our customers by looking at the Quantity they purchase.
+We can see that there are distinctly 2 different types of customers. Either they purchase high amount of quantities (large scale sellers) or its below 300 (small scale sellers). We can further check the difference in revenue obtained from these two parties. Although the quantities looks high the items sold might be of low price and vice versa. 
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+summary(new_data$Total_Items)
+new_data$customer_type<-''
+new_data$customer_type[new_data$Total_Items < 300]<-'Small Scale Seller'
+new_data$customer_type[new_data$Total_Items >= 300]<-'Large Scale Seller'
+table(new_data$customer_type)
+
+## Revenue from each of the type of customer
+aggregate(Purchase ~ customer_type,new_data, sum)
+ggplot(new_data, aes(x=customer_type, y=Purchase,fill=customer_type)) + 
+  geom_bar(stat = "identity")+
+  scale_y_continuous(labels = scales::comma)+
+  xlab("Customer Type")+
+  ylab("Revenue")+
+  ggtitle("Revenue by Customer Type")
+```
+We can see that 68% of the revenue is coming from Large scale sellers. 
+Further,Lets try to understand more about this customers. We already know that there are Low and High Scale sellers. It will be interesting to see a time series of the revenue gained from these customers. It can give us some idea about the trend and seasonality if any in these.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+# Usual area chart
+low <- new_data[new_data$customer_type == 'Small Scale Seller',]
+p <- low %>%
+  ggplot( aes(x=InvoiceDate, y=Purchase)) +
+  geom_area(fill="#69b3a2", alpha=0.5) +
+  geom_line(color="#69b3a2") +
+  ylab("Total Revenue($)") +
+  ggtitle("Revenue Trend for Small Scale Sellers")
+
+# Turn it interactive with ggplotly
+p <- ggplotly(p)
+p
+
+high <- new_data[new_data$customer_type == 'Large Scale Seller',]
+p2 <- high %>%
+  ggplot( aes(x=InvoiceDate, y=Purchase)) +
+  geom_area(fill="#69b3a2", alpha=0.5) +
+  geom_line(color="#69b3a2") +
+  ylab("Total Revenue($)") +
+  ggtitle("Revenue Trend for High Spending Customers")
+
+# Turn it interactive with ggplotly
+p2 <- ggplotly(p2)
+p2
+```
+We can see that there are different seasonalities for the low and high scale sellers. As a next step, we can further dig deep into these seasonalities to predict any patterns.
+Moving ahead, it will be interesting to see how frequently these customers make the purchases, is there a different frequency pattern for high vs low. 
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+## Check what is the frequency of purchase for these customers per week/month?
+
+freq_data<- new_data[with(new_data, order(`Customer ID`,InvoiceDate)), ]
+
+## Which are these Customers with no ID
+
+Unknowns <- freq_data[freq_data$`Customer ID` == 0,]
+
+table(Unknowns$customer_type)
+
+## Since there is no information on some customer ids so we will ignore that set of customers
+
+freq_data<- freq_data[freq_data$`Customer ID` >0,]
+
+## Order data.frame by IDs, then by increasing _dates (if not already sorted)
+freq_data <- freq_data[order(freq_data$`Customer ID`, freq_data$InvoiceDate),]
+
+## Calculate difference in total_sleep with previous entry
+freq_data$diff_in_days <- c(NA,abs(diff(freq_data$InvoiceDate)))
+
+## If previous `Customer ID` is not equal, replace diff_in_days with NA
+ind <- c(NA, diff(freq_data$`Customer ID`))
+freq_data$diff_in_days[ind != 0] <- NA
+
+## And if previous day wasn't yesterday, replace diff in days  with NA
+day_ind <- c(NA, diff(freq_data$InvoiceDate))
+
+## CAlaculate the average number of days for each customer
+
+Avg_freq_per_customer<- freq_data %>%
+                       group_by(customer_type,`Customer ID`) %>%
+                       summarise(Avg_Freq = round(mean(diff_in_days,na.rm= T)))
+
+Avg_freq_per_customer<- Avg_freq_per_customer[Avg_freq_per_customer$Avg_Freq>1,]
+Avg_freq_per_customer<- na.omit(Avg_freq_per_customer)
+
+box<-ggplot(Avg_freq_per_customer, aes(x=customer_type, y=Avg_Freq, fill=customer_type)) +
+  geom_boxplot() +
+  xlab("Type of Customer") +
+  ylab("Frequency of Purchase in Days") +
+  scale_y_continuous(labels = scales::comma)+
+  ggtitle("Frequency of Purchase in Days by Customer Type")
+box
+```
+The frequency of purchase looks pretty similar for both the types of customers which is close to 60 days from the 2 years of data. So on average we can say, a customer makes a purchase once in 2 months.
+Lastly,we explore some more details on customers contributing to top 10% of the revenue.
+
+```{r echo=TRUE, message=FALSE,warning=FALSE,fig.width=10}
+
+invoices<-aggregate(sale ~ `Customer ID`, mydata,n_distinct)
+
+## Who are the top customers and their contribution
+invoices$percent<- (invoices$sale/sum((invoices$sale)))
+
+## reorder the customers 
+invoices<- invoices[order(-invoices$sale),]
+invoices$cumu <-cumsum(invoices$percent)
+
+## Top 10% percent contributing customers
+top10percent<- invoices[invoices$cumu <= 0.1,]
+
+#Final table for top 10% contributing customers
+top10percent_details <- mydata[mydata$`Customer ID` %in% top10percent$`Customer ID`,]
+## Which country are these customers from?
+
+country_top10<-data.frame(table(top10percent_details$Country))
+names(country_top10) <- c("Country","Users")
+ggplot(country_top10, aes(x=Country, y=Users,fill=Country)) + 
+  geom_bar(stat = "identity")+
+  scale_y_continuous(labels = scales::comma)+
+  xlab("Country")+
+  ylab("Number of Customers")+
+  ggtitle("Top Revenue Contributing Users by Country")
+
+``` 
+We can conclude on the top customers to be from UK followed by EIRE. 
+
+## Conclusion and Next Steps{.tabset}
+The retail data set was pretty interesting to explore in terms of invoices and the type of customers. However, there was a large amount of information on Customer IDs missing which could give us more information about this data. As a next step, would like to figure out if there was some issue while registering with these users. I did some research but wasn't conclusive with the given data. 
+Further, we also see there is large amount of cancellations. It will be good to check if there is some system error of certain factors causing these cancellations.
+
